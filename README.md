@@ -4,7 +4,6 @@ Proyecto de búsquedas basadas en la intensión o significado en el ámbito lega
 # Documentación del Proyecto
 ## Dependencias
 ### Baseline:
-* flask: Para el backend.
-* scikit-learn: Para el TF-IDF.
-* pandas: Para manejar los datos fácilmente.
+* pandas: Para manejar datos fácilmente.
 * nltk: Para las stopwords y el preprocesamiento.
+* scikit-learn: Para TF-IDF.
