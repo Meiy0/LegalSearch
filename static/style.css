@@ -1,0 +1,179 @@
+/* Contenido de static/style.css */
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background-color: #f4f7f6;
+    color: #333;
+    margin: 0;
+    padding: 0; /* Quitamos el padding de 20px del body */
+}
+
+/* --- ESTILOS DEL NAVBAR --- */
+.navbar {
+    width: 100%;
+    background-color: #ffffff;
+    padding: 15px 30px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    box-sizing: border-box; /* Importante */
+}
+.nav-brand a {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #1a535c;
+    text-decoration: none;
+}
+.nav-links {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    gap: 20px;
+}
+.nav-links a {
+    text-decoration: none;
+    color: #333;
+    font-weight: 500;
+    transition: color 0.2s;
+}
+.nav-links a:hover {
+    color: #4ecdc4;
+}
+/* --- FIN NAVBAR --- */
+
+
+/* Contenedor principal (el .container original) */
+.main-container-wrapper {
+    display: flex;
+    justify-content: center;
+    padding: 20px; /* Añadimos el padding aquí */
+}
+.main-container {
+    width: 100%;
+    max-width: 1200px; /* Ancho para las 2 columnas */
+    background-color: #ffffff;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+    padding: 25px 40px;
+}
+
+/* El resto de tus estilos (ligeramente renombrados para coincidir con el HTML) */
+h1 {
+    color: #1a535c;
+    text-align: center;
+    border-bottom: 2px solid #f0f0f0;
+    padding-bottom: 15px;
+}
+form {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    margin-bottom: 20px;
+}
+.form-group {
+    display: flex;
+    flex-direction: column;
+}
+label {
+    font-weight: 600;
+    margin-bottom: 5px;
+}
+input[type="file"], input[type="text"] {
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    font-size: 1rem;
+}
+button {
+    background-color: #4ecdc4;
+    color: white;
+    border: none;
+    padding: 12px 15px;
+    border-radius: 5px;
+    font-size: 1.1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+button:hover {
+    background-color: #3db8af;
+}
+
+.result-item {
+    background-color: #f9f9f9;
+    border-left: 5px solid #4ecdc4;
+    padding: 15px;
+    margin-bottom: 15px;
+    border-radius: 0 5px 5px 0;
+    line-height: 1.6;
+    position: relative;
+}
+.info {
+    background-color: #e6f7ff;
+    border: 1px solid #b3e0ff;
+    color: #0056b3;
+    padding: 10px;
+    border-radius: 5px;
+    text-align: center;
+}
+.error {
+    background-color: #ffe6e6;
+    border: 1px solid #ffb3b3;
+    color: #b30000;
+    padding: 10px;
+    border-radius: 5px;
+    text-align: center;
+}
+.clear-link {
+    text-align: center;
+    margin-top: 15px;
+}
+.clear-link a {
+    color: #555;
+    font-size: 0.9rem;
+    text-decoration: none;
+}
+.clear-link a:hover {
+    text-decoration: underline;
+}
+
+/* --- Layout de 2 columnas --- */
+.content-wrapper {
+    display: flex;
+    flex-wrap: wrap; 
+    gap: 30px;
+    margin-top: 20px;
+}
+.pdf-viewer-container {
+    flex: 1; 
+    min-width: 400px;
+}
+.results-container {
+    flex: 1;
+    min-width: 300px;
+}
+.pdf-viewer-container iframe {
+    width: 100%;
+    height: 700px; 
+    border: 1px solid #ddd;
+    border-radius: 5px;
+}
+.results {
+    margin-top: 0;
+}
+h2 {
+    margin-top: 0;
+    color: #1a535c;
+}
+h3 {
+    color: #1a535c;
+}
+.pagina-info {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #1a535c;
+    margin-bottom: 10px;
+    padding-bottom: 5px;
+    border-bottom: 1px solid #eee;
+}

@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+
+{% block title %}Inspector de PDF{% endblock %}
+
+
+{% block content %}
+
+    <h1>🔍 Buscador Semántico en Contratos</h1>
+
+    {% if pdf_cargado %}
+        
+        <p class="info">
+            <strong>PDF cargado y listo.</strong> 
+            (Indexados {{ num_fragmentos or '...' }} fragmentos).
+        </p>
+
+        <form action="{{ url_for('search') }}" method="POST">
+            <div class="form-group">
+                <label for="query">Escriba su consulta:</label>
+                <input type="text" id="query" name="query" 
+                       placeholder="Ej: 'multa por terminación anticipada'" 
+                       value="{{ query or '' }}" required>
+            </div>
+            <button type="submit">Buscar</button>
+        </form>
+
+        <div class="clear-link">
+            <a href="{{ url_for('clear_session') }}">Subir un PDF diferente</a>
+        </div>
+
+    {% else %}
+
+        <form action="{{ url_for('search') }}" method="POST" enctype="multipart/form-data">
+            
+            <div class="form-group">
+                <label for="pdf_file">1. Suba el archivo PDF:</label>
+                <input type="file" id="pdf_file" name="pdf_file" accept=".pdf" required>
+            </div>
+
+            <div class="form-group">
+                <label for="query">2. Escriba su consulta inicial:</label>
+                <input type="text" id="query" name="query" 
+                       placeholder="Ej: 'multa por terminación anticipada'" 
+                       value="{{ query or '' }}" required>
+            </div>
+            
+            <button type="submit">Subir y Buscar</button>
+        </form>
+
+    {% endif %}
+    
+    {% if pdf_cargado or results is not none or error %}
+    <hr style="margin: 30px 0;">
+    <div class="content-wrapper">
+
+        {% if pdf_cargado %}
+        <div class="pdf-viewer-container">
+            <h3>Documento Actual</h3>
+            <iframe src="{{ url_for('get_pdf_viewer') }}" title="Visualizador de PDF"></iframe>
+        </div>
+        {% endif %}
+
+        <div class="results-container">
+            <div class="results">
+                {% if error %}
+                    <p class="error"><strong>Error:</strong> {{ error }}</p>
+                {% endif %}
+
+                {% if results is not none %}
+                    <h2>Resultados para: "{{ query }}"</h2>
+                    
+                    {% if num_fragmentos %}
+                    <p class="info">
+                        Mostrando los 3 resultados más relevantes 
+                        de {{ num_fragmentos }} fragmentos.
+                    </p>
+                    {% endif %}
+
+                    {% if results %}
+                        {% for res in results %}
+                            <div class="result-item">
+                                <p class="pagina-info">
+                                    Encontrado en la Página: {{ res.pagina }}
+                                </p>
+                                <p>{{ res.texto }}</p>
+                            </div>
+                        {% endfor %}
+                    {% else %}
+                        <p>No se encontraron resultados relevantes para tu consulta.</p>
+                    {% endif %}
+                    
+                {% endif %}
+            </div>
+        </div>
+
+    </div>
+    {% endif %}
+
+{% endblock %}

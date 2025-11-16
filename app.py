@@ -1,178 +1,283 @@
 import os
-import io
-import re
-import nltk
-from nltk.corpus import stopwords
-from nltk.stem import SnowballStemmer
-from nltk.tokenize import word_tokenize
-from sklearn.feature_extraction.text import TfidfVectorizer
-from flask import Flask, request, render_template, jsonify
+from flask import Flask, render_template, request, redirect, url_for, session, Response, make_response, jsonify
+import fitz
 from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
-from PyPDF2 import PdfReader
+import faiss
 import numpy as np
+import re
+import uuid
+from cachetools import LRUCache
+from sklearn.metrics.pairwise import cosine_similarity
 
-#Configuración inicial
-print("Inicializando Flask...")
+#--- Inicialización ---
 app = Flask(__name__)
+app.config['SECRET_KEY'] = 'f3b0c3f0b0c3f0b0c3f0b0c3f0b0c3f0'
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024 
 
-#Modelos y datos globales
-print("Cargando modelo SentenceTransformer...")
+#--- Carga del Modelo ---
 try:
-    modelo = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-    print("Modelo cargado desde caché.")
+    print("Cargando modelo de SentenceTransformer...")
+    modelo = SentenceTransformer('paraphrase-multilingual-mpnet-base-v2')
+    print("Modelo cargado exitosamente.")
 except Exception as e:
-    print(f"Error: {e}")
-try:
-    nltk.data.find('tokenizers/punkt')
-except LookupError:
-    nltk.download('punkt')
-try:
-    nltk.data.find('tokenizers/punkt')
-except LookupError:
-    nltk.download('punkt')
-try:
-    nltk.data.find('corpora/stopwords')
-except LookupError:
-    nltk.download('stopwords')
+    print(f"Error cargando el modelo: {e}")
+    modelo = None
 
-#----- Funciones auxiliares -----
+#--- Caché Global ---
+PDF_CACHE = LRUCache(maxsize=20) 
 
-#Configuracion de nltk
-stemmer = nltk.SnowballStemmer("spanish")
-stop_words_es = set(stopwords.words("spanish"))
+#--- Funciones de Lógica ---
 
-def preprocesar_texto(texto):
-    texto_minusculas = texto.lower()
-    tokens = word_tokenize(texto_minusculas, language='spanish')
-    tokens_limpios = []
-    for palabra in tokens:
-        if palabra.isalpha():
-            if palabra not in stop_words_es:
-                palabra_raiz = stemmer.stem(palabra)
-                tokens_limpios.append(palabra_raiz)
-    return " ".join(tokens_limpios)
-
-#Toma el pdf y devuelve el texto
-def extraer_texto(archivo_pdf):
-    try:
-        pdf_stream = io.BytesIO(archivo_pdf.read()) #leer desde memoria
-        reader = PdfReader(pdf_stream)
-        texto = ""
-        for pagina in reader.pages:
-            texto += pagina.extract_text() + "\n"
-        return texto
-    except Exception as e:
-        print(f"Error leyendo PDF: {e}")
-        return None
-
-#Dividir texto en trozos de longitud fija
-def segmentar_texto(texto_completo):
-    #reemplazar saltos de linea
-    texto_limpio = texto_completo.replace('\n', ' ').replace('\t', ' ')
-    #quitar doble espacios
-    texto_limpio = re.sub(r'\s+', ' ', texto_limpio).strip()
+#Extrae y divide el pdf en fragmentos
+def extraer_y_dividir_por_pagina(stream_de_bytes):
+    MIN_CHAR_LENGTH = 150
+    datos_fragmentos = []
     
-    #segmentar por oración
-    oraciones = nltk.sent_tokenize(texto_limpio, language='spanish')
-    
-    #filtrar por longitud
-    clausulas = [s for s in oraciones if len(s) > 20 and len(s) < 1000]
-    
-    return clausulas
+    with fitz.open(stream=stream_de_bytes, filetype="pdf") as doc:
+        for num_pagina, pagina in enumerate(doc, start=1):
+            texto_pagina = pagina.get_text()
+            
+            fragmentos_pagina = re.split(r'\n\s*\n', texto_pagina)
+            
+            for f in fragmentos_pagina:
+                f_limpio = f.strip()
+                if f_limpio and len(f_limpio) > MIN_CHAR_LENGTH:
+                    datos_fragmentos.append({
+                        "texto": f_limpio,
+                        "pagina": num_pagina 
+                    })
+                    
+    return datos_fragmentos
 
-#Motor de búsqueda semántica y lexical
-def buscar_en_documento(texto_completo, pregunta):
-    #segmentar en cláusulas
-    clausulas = segmentar_texto(texto_completo)
-    if not clausulas:
+#Crea indice FAISS
+def crear_indice_faiss(datos_fragmentos, modelo):
+    if not datos_fragmentos or modelo is None:
+        return None, []
+    
+    textos_para_embed = [item['texto'] for item in datos_fragmentos]
+    
+    embeddings = modelo.encode(textos_para_embed, convert_to_tensor=False)
+    embeddings_np = np.array(embeddings).astype('float32')
+    faiss.normalize_L2(embeddings_np)
+    
+    dimension = embeddings_np.shape[1]
+    index = faiss.IndexFlatIP(dimension)
+    index.add(embeddings_np)
+    
+    return index, datos_fragmentos
+
+#Busca la consulta y devulve la respuesta junto con la página
+def buscar_en_indice(consulta, index, datos_fragmentos, modelo, k=3):
+    if index is None or modelo is None:
         return []
+        
+    vector_consulta = modelo.encode([consulta])
+    vector_consulta_np = np.array(vector_consulta).astype('float32')
+    faiss.normalize_L2(vector_consulta_np)
     
-    #----- busqueda semantica -----
-    #generar embeddings
-    embedding_doc = modelo.encode(clausulas)
-    embedding_pregunta = modelo.encode([pregunta])
-
-    #calcular similitud del coseno
-    similitudes_semanticas = cosine_similarity(embedding_pregunta, embedding_doc).flatten()
-
-    #ordenar resultados en top 20
-    indices_top_20 = similitudes_semanticas.argsort()[-20:][::-1]
-
-    clausulas_candidatas = [clausulas[i] for i in indices_top_20]
-    if not clausulas_candidatas:
-        return []
+    distances, indices = index.search(vector_consulta_np, k)
     
-    #----- reranking lexical -----
-    #preprocesamiento
-    clausulas_limpias = [preprocesar_texto(c) for c in clausulas_candidatas]
-    pregunta_limpia = preprocesar_texto(pregunta)
-
-    #aplicar TF-IDF para las 20 clausulas
-    vectorizer_tfidf = TfidfVectorizer()
-    doc_candidatos = vectorizer_tfidf.fit_transform(clausulas_limpias)
-
-    pregunta_tfidf = vectorizer_tfidf.transform([pregunta_limpia])
-
-    #calcular similitud
-    similitudes_tfidf = cosine_similarity(pregunta_tfidf, doc_candidatos).flatten()
-
-    #----- entregar resultados -----
-    indices_top_5 = similitudes_tfidf.argsort()[-5:][::-1]
-
-    #preparar resultados
     resultados = []
-    for i in indices_top_5:
-        index_og = indices_top_20[i]
-        puntaje_semantico = similitudes_semanticas[index_og] #puntaje semantico original con orden TF-IDF
-
-        if puntaje_semantico > 0.1: #umbral de confianza
-            resultados.append({
-                "similitud": float(puntaje_semantico),
-                "clausula" : clausulas[index_og]
-            })
-
-    
+    for i in indices[0]:
+        if i != -1:
+            resultados.append(datos_fragmentos[i])
+            
     return resultados
 
-#Endpoints de la API
+#--- Rutas de la Aplicación Web ---
 
-#Home
-@app.route("/")
+@app.route('/')
 def home():
-    return render_template("search_demo.html")
+    pdf_cargado = 'pdf_id' in session
+    num_fragmentos = session.get('num_fragmentos', 0)
+    return render_template('inspector.html', 
+                           results=None, 
+                           pdf_cargado=pdf_cargado, 
+                           num_fragmentos=num_fragmentos)
 
 #Búsqueda Semántica
-@app.route("/search", methods=["POST"])
-def buscar():
-    #recibe archivo y pregunta
-    try:
-        if 'file' not in request.files:
-            return jsonify({"error": "No se subió ningún archivo."})
+@app.route('/inspector', methods=['POST'])
+def search():
+    if modelo is None:
+        return "Error: El modelo de IA no está cargado.", 500
 
-        archivo = request.files['file']
-        pregunta = request.form['query']
+    query = request.form.get('query', '')
+    file = request.files.get('pdf_file')
 
-        if archivo.filename == '':
-            return jsonify({"error": "No se seleccionó ningún archivo."})
+    #CASO 1: Se sube un NUEVO PDF
+    if file and file.filename != '' and file.filename.endswith('.pdf'):
+        try:
+            print("Procesando nuevo PDF por página...")
+            pdf_bytes = file.read()
         
-        if archivo and archivo.filename.endswith('.pdf'):
-            #extraer texto del pdf
-            texto = extraer_texto(archivo)
-            if texto is None:
-                return jsonify({"error": "No se pudo leer el archivo PDF."})
+            datos_fragmentos = extraer_y_dividir_por_pagina(pdf_bytes)
             
-            #conectar con motor de búsqueda 
-            resultados = buscar_en_documento(texto, pregunta)
+            if not datos_fragmentos:
+                return render_template('inspector.html', query=query, error="No se pudo extraer texto o el PDF está vacío.")
             
-            #devolver resultados
-            return jsonify(resultados)
-        else:
-            return jsonify({"error": "Por favor, sube un archivo .pdf"})
-    except Exception as e:
-        print(f"Error en /buscar: {e}")
-        return jsonify({'error': f'Ocurrió un error en el servidor: {str(e)}'}), 500
+            index_faiss, datos_originales = crear_indice_faiss(datos_fragmentos, modelo)
+            
+            pdf_id = str(uuid.uuid4())
+            PDF_CACHE[pdf_id] = (index_faiss, datos_originales, pdf_bytes) 
+            
+            session['pdf_id'] = pdf_id
+            session['num_fragmentos'] = len(datos_originales)
+            
+            resultados = buscar_en_indice(query, index_faiss, datos_originales, modelo, k=3)
+            
+            return render_template('inspector.html', 
+                                   results=resultados,
+                                   query=query, 
+                                   num_fragmentos=len(datos_originales),
+                                   pdf_cargado=True)
+        
+        except Exception as e:
+            return render_template('inspector.html', error=f"Ocurrió un error: {e}")
 
-#Ejecución de la aplicación
-if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    #CASO 2: El usuario ya subió un PDF y solo está consultando
+    elif query != '' and 'pdf_id' in session:
+        pdf_id = session['pdf_id']
+        cached_data = PDF_CACHE.get(pdf_id)
+        
+        if cached_data:
+            print(f"Usando índice en caché: {pdf_id}")
+            index_faiss, datos_originales, _ = cached_data
+            
+            resultados = buscar_en_indice(query, index_faiss, datos_originales, modelo, k=3)
+            
+            return render_template('inspector.html', 
+                                   results=resultados,
+                                   query=query, 
+                                   num_fragmentos=session['num_fragmentos'],
+                                   pdf_cargado=True)
+        else:
+            session.pop('pdf_id', None)
+            session.pop('num_fragmentos', None)
+            return render_template('inspector.html', error="Tu sesión de PDF expiró. Por favor, sube el archivo de nuevo.")
+
+    #CASO 3: Error
+    else:
+        return render_template('inspector.html', error="Debes subir un PDF y escribir una consulta.")
+
+@app.route('/clear')
+def clear_session():
+    pdf_id = session.pop('pdf_id', None)
+    session.pop('num_fragmentos', None)
+    if pdf_id and pdf_id in PDF_CACHE:
+        PDF_CACHE.pop(pdf_id, None) 
+        print(f"Limpiando sesión y caché para {pdf_id}.")
+    return redirect(url_for('home'))
+
+@app.route('/get_pdf_viewer')
+def get_pdf_viewer():
+    if 'pdf_id' not in session:
+        return "No hay PDF en la sesión.", 404
+    pdf_id = session['pdf_id']
+    cached_data = PDF_CACHE.get(pdf_id)
+    if cached_data:
+        pdf_bytes = cached_data[2]
+        response = make_response(pdf_bytes)
+        response.headers['Content-Type'] = 'application/pdf'
+        response.headers['Content-Disposition'] = 'inline; filename=documento.pdf'
+        return response
+    else:
+        return "El PDF expiró de la caché.", 404
+
+# --- Rutas del Clasificador ---
+
+@app.route("/clasificador")
+def clasificador_page():
+    """
+    Muestra la página HTML del clasificador.
+    (Asegúrate de tener un archivo 'clasificador.html' en tu carpeta 'templates')
+    """
+    return render_template("clasificador.html")
+
+@app.route("/api/clasificar", methods=["POST"])
+def api_clasificar():
+    """
+    API para la página "Clasificador": Recibe MÚLTIPLES PDFs y 1 pregunta.
+    Devuelve una lista de documentos ordenados por relevancia.
+    """
+    
+    # Validamos que el modelo de IA esté cargado
+    if modelo is None:
+        return jsonify({'error': 'El modelo de IA no está cargado.'}), 500
+
+    try:
+        # 1. Obtener la lista de archivos y la pregunta
+        archivos_subidos = request.files.getlist('file')
+        pregunta = request.form.get('query', '')
+        
+        if not archivos_subidos or archivos_subidos[0].filename == '':
+            return jsonify({'error': 'No se seleccionaron archivos.'}), 400
+        
+        if not pregunta:
+            return jsonify({'error': 'No se incluyó una pregunta (query).'}), 400
+
+        # 2. Codificar la pregunta (query) UNA SOLA VEZ
+        # (Omitimos 'expandir_consulta' ya que no está en tu código base)
+        pregunta_para_buscar = pregunta.lower()
+        embedding_pregunta = modelo.encode([pregunta_para_buscar])
+        
+        # Asegurarse que sea 2D (shape 1, D) para cosine_similarity
+        if embedding_pregunta.ndim == 1:
+            embedding_pregunta = embedding_pregunta.reshape(1, -1)
+
+        lista_de_scores = []
+
+        # 3. Procesar CADA archivo de la lista
+        for archivo in archivos_subidos:
+            if archivo and archivo.filename.endswith('.pdf'):
+                
+                try:
+                    # 4. Extraer y segmentar (¡REUTILIZANDO TU FUNCIÓN EXISTENTE!)
+                    pdf_bytes = archivo.read()
+                    datos_fragmentos = extraer_y_dividir_por_pagina(pdf_bytes) 
+                    
+                    if not datos_fragmentos:
+                        print(f"Archivo {archivo.filename} no generó fragmentos, saltando.")
+                        continue # Saltar archivo sin texto o vacío
+
+                    # 5. Preparar textos para la búsqueda semántica
+                    textos_fragmentos = [item['texto'].lower() for item in datos_fragmentos]
+
+                    # 6. Calcular similitud semántica
+                    embedding_doc = modelo.encode(textos_fragmentos)
+                    
+                    # embedding_pregunta es (1, D)
+                    # embedding_doc es (N, D) donde N es el num de fragmentos
+                    similitudes_semanticas = cosine_similarity(embedding_pregunta, embedding_doc).flatten()
+                    
+                    # 7. Encontrar el score MÁXIMO de este documento
+                    score_maximo = 0.0
+                    if len(similitudes_semanticas) > 0:
+                        score_maximo = float(similitudes_semanticas.max())
+                    
+                    lista_de_scores.append({
+                        "documento": archivo.filename,
+                        "similitud": score_maximo
+                    })
+                
+                except Exception as e_file:
+                    # Capturar error por archivo individual (ej. PDF corrupto)
+                    print(f"Error procesando el archivo {archivo.filename}: {e_file}")
+                    lista_de_scores.append({
+                        "documento": archivo.filename,
+                        "similitud": 0.0,
+                        "error": f"No se pudo procesar: {str(e_file)}"
+                    })
+
+        # 8. Ordenar la lista final de documentos por similitud descendente
+        resultados_ordenados = sorted(lista_de_scores, key=lambda x: x["similitud"], reverse=True)
+        
+        # 9. Devolver el JSON que el frontend espera
+        return jsonify(resultados_ordenados)
+            
+    except Exception as e:
+        print(f"Error general en /api/clasificar: {e}")
+        return jsonify({'error': f'Ocurrió un error en el servidor: {str(e)}'}), 500
+    
+#--- Ejecutar la App ---
+if __name__ == '__main__':
+    app.run(debug=True)

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}Clasificador de Documentos - LegalSearch{% endblock %}
+
+{% block styles %}
+{% endblock %}
+
+{% block content %}
+    <h1>Clasificador de Documentos</h1>
+    <p>Suba múltiples documentos PDF y haga una pregunta para clasificarlos por relevancia.</p>
+
+<div class="panel" id="main-panel">
+    
+    <form id="searchForm" enctype="multipart/form-data">
+        <label for="pdfFile">Paso 1: Seleccione uno o más archivos PDF:</label>
+        <input type="file" id="pdfFile" name="file" accept=".pdf" required multiple>
+        
+        <label for="queryInput">Paso 2: Ingrese su pregunta (consulta):</label>
+        <input type="text" id="queryInput" name="query" placeholder="Ej: ¿Cuál de estos documentos tiene cláusula de compraventa?" required>
+        <button type="submit" id="submitButton">Clasificar Documentos</button>
+    </form>
+
+    <div id="resultsContainer">
+        <p class="info-message">Seleccione sus PDFs y haga una búsqueda.</p>
+    </div>
+
+</div>
+
+<script src="{{ url_for('static', filename='clasificador.js') }}"></script>
+{% endblock %}
