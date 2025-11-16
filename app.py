@@ -8,6 +8,15 @@ import re
 import uuid
 from cachetools import LRUCache
 from sklearn.metrics.pairwise import cosine_similarity
+import io
+import nltk
+from nltk.corpus import stopwords
+from nltk.stem import SnowballStemmer
+from nltk.tokenize import word_tokenize
+from sklearn.feature_extraction.text import TfidfVectorizer
+from PyPDF2 import PdfReader
+import json
+
 
 #--- Inicialización ---
 app = Flask(__name__)
@@ -83,6 +92,40 @@ def buscar_en_indice(consulta, index, datos_fragmentos, modelo, k=3):
             resultados.append(datos_fragmentos[i])
             
     return resultados
+
+
+#--- Funciones de Lógica Clasificación Múltiple ---
+
+stemmer = nltk.SnowballStemmer("spanish")
+stop_words_es = set(stopwords.words("spanish"))
+
+def preprocesar_texto(texto):
+    texto_minusculas = texto.lower()
+    tokens = word_tokenize(texto_minusculas, language='spanish')
+    tokens_limpios = []
+    for palabra in tokens:
+        if palabra.isalpha(): 
+            if palabra not in stop_words_es: 
+                palabra_raiz = stemmer.stem(palabra) 
+                tokens_limpios.append(palabra_raiz)
+    return " ".join(tokens_limpios)
+
+def extraer_texto_y_paginas(archivo_pdf):
+    # Esta función es para el clasificador TF-IDF.
+    # Usa PyPDF2 y devuelve solo el texto completo.
+    try:
+        pdf_stream = io.BytesIO(archivo_pdf.read())
+        reader = PdfReader(pdf_stream)
+        texto_completo = ""
+        for page in reader.pages:
+            texto_pagina = page.extract_text()
+            if texto_pagina:
+                texto_completo += texto_pagina + "\n\n"
+        # Devolvemos una tupla para ser compatible con la llamada en api_clasificar
+        return texto_completo, None 
+    except Exception as e:
+        print(f"Error leyendo PDF con PyPDF2: {e}")
+        return None, None
 
 #--- Rutas de la Aplicación Web ---
 
@@ -187,95 +230,69 @@ def get_pdf_viewer():
 
 @app.route("/clasificador")
 def clasificador_page():
-    """
-    Muestra la página HTML del clasificador.
-    (Asegúrate de tener un archivo 'clasificador.html' en tu carpeta 'templates')
-    """
     return render_template("clasificador.html")
 
 @app.route("/api/clasificar", methods=["POST"])
 def api_clasificar():
     """
-    API para la página "Clasificador": Recibe MÚLTIPLES PDFs y 1 pregunta.
-    Devuelve una lista de documentos ordenados por relevancia.
+    API para "Clasificador" usando SÓLO TF-IDF.
+    Es mucho más rápido y preciso para palabras clave.
     """
-    
-    # Validamos que el modelo de IA esté cargado
-    if modelo is None:
-        return jsonify({'error': 'El modelo de IA no está cargado.'}), 500
-
     try:
-        # 1. Obtener la lista de archivos y la pregunta
         archivos_subidos = request.files.getlist('file')
-        pregunta = request.form.get('query', '')
+        pregunta = request.form['query']
         
         if not archivos_subidos or archivos_subidos[0].filename == '':
-            return jsonify({'error': 'No se seleccionaron archivos.'}), 400
+            return jsonify({'error': 'No se seleccionaron archivos.'})
         
-        if not pregunta:
-            return jsonify({'error': 'No se incluyó una pregunta (query).'}), 400
-
-        # 2. Codificar la pregunta (query) UNA SOLA VEZ
-        # (Omitimos 'expandir_consulta' ya que no está en tu código base)
-        pregunta_para_buscar = pregunta.lower()
-        embedding_pregunta = modelo.encode([pregunta_para_buscar])
+        #UMBRAL DE RELEVANCIA LÉXICA
+        # Con TF-IDF, un puntaje bajo (ej. 0.05) ya puede ser relevante
+        UMBRAL_LEXICAL = 0.05 
         
-        # Asegurarse que sea 2D (shape 1, D) para cosine_similarity
-        if embedding_pregunta.ndim == 1:
-            embedding_pregunta = embedding_pregunta.reshape(1, -1)
+        #Preparar la Pregunta
+        pregunta_limpia = preprocesar_texto(pregunta)
+        
+        lista_textos_completos = []
+        lista_nombres_archivos = []
 
-        lista_de_scores = []
-
-        # 3. Procesar CADA archivo de la lista
+        #Extraer el texto de TODOS los archivos
         for archivo in archivos_subidos:
             if archivo and archivo.filename.endswith('.pdf'):
-                
-                try:
-                    # 4. Extraer y segmentar (¡REUTILIZANDO TU FUNCIÓN EXISTENTE!)
-                    pdf_bytes = archivo.read()
-                    datos_fragmentos = extraer_y_dividir_por_pagina(pdf_bytes) 
-                    
-                    if not datos_fragmentos:
-                        print(f"Archivo {archivo.filename} no generó fragmentos, saltando.")
-                        continue # Saltar archivo sin texto o vacío
+                texto_completo, _ = extraer_texto_y_paginas(archivo)
+                if texto_completo:
+                    lista_textos_completos.append(texto_completo)
+                    lista_nombres_archivos.append(archivo.filename)
 
-                    # 5. Preparar textos para la búsqueda semántica
-                    textos_fragmentos = [item['texto'].lower() for item in datos_fragmentos]
+        if not lista_textos_completos:
+            return jsonify([])
 
-                    # 6. Calcular similitud semántica
-                    embedding_doc = modelo.encode(textos_fragmentos)
-                    
-                    # embedding_pregunta es (1, D)
-                    # embedding_doc es (N, D) donde N es el num de fragmentos
-                    similitudes_semanticas = cosine_similarity(embedding_pregunta, embedding_doc).flatten()
-                    
-                    # 7. Encontrar el score MÁXIMO de este documento
-                    score_maximo = 0.0
-                    if len(similitudes_semanticas) > 0:
-                        score_maximo = float(similitudes_semanticas.max())
-                    
-                    lista_de_scores.append({
-                        "documento": archivo.filename,
-                        "similitud": score_maximo
-                    })
-                
-                except Exception as e_file:
-                    # Capturar error por archivo individual (ej. PDF corrupto)
-                    print(f"Error procesando el archivo {archivo.filename}: {e_file}")
-                    lista_de_scores.append({
-                        "documento": archivo.filename,
-                        "similitud": 0.0,
-                        "error": f"No se pudo procesar: {str(e_file)}"
-                    })
+        #Preprocesar los textos
+        corpus_limpio = [preprocesar_texto(texto) for texto in lista_textos_completos]
 
-        # 8. Ordenar la lista final de documentos por similitud descendente
+        #Aplicar TF-IDF
+        vectorizer_tfidf = TfidfVectorizer()
+        tfidf_doc_matriz = vectorizer_tfidf.fit_transform(corpus_limpio)
+        tfidf_pregunta = vectorizer_tfidf.transform([pregunta_limpia])
+        
+        #Similitud de la pregunta contra TODOS los documentos a la vez
+        similitudes_tfidf = cosine_similarity(tfidf_pregunta, tfidf_doc_matriz).flatten()
+
+        #Filtrar y Recopilar Resultados
+        lista_de_scores = []
+        for i, score in enumerate(similitudes_tfidf):
+            if score > UMBRAL_LEXICAL:
+                lista_de_scores.append({
+                    "documento": lista_nombres_archivos[i],
+                    "similitud": float(score) 
+                })
+
+        #lista resultados relevantes
         resultados_ordenados = sorted(lista_de_scores, key=lambda x: x["similitud"], reverse=True)
         
-        # 9. Devolver el JSON que el frontend espera
         return jsonify(resultados_ordenados)
             
     except Exception as e:
-        print(f"Error general en /api/clasificar: {e}")
+        print(f"Error en /api/clasificar: {e}")
         return jsonify({'error': f'Ocurrió un error en el servidor: {str(e)}'}), 500
     
 #--- Ejecutar la App ---
