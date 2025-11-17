@@ -1,0 +1,165 @@
+{% extends "base.html" %} 
+
+{% block title %}Destacador de Palabras Clave{% endblock %}
+
+{% block styles %}
+<style>
+    /* (Estilos existentes) */
+    .container-destacador {
+        max-width: 800px;
+        margin: 20px auto;
+        background: #fff;
+        padding: 25px;
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    }
+    .container-destacador form {
+        display: flex;
+        flex-direction: column;
+        gap: 15px;
+    }
+    .container-destacador input[type="file"] {
+        padding: 10px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+    }
+    .container-destacador button {
+        padding: 12px 15px;
+        background-color: #007bff;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 16px;
+    }
+    .container-destacador button:hover { background-color: #0056b3; }
+    .container-destacador button:disabled { background-color: #ccc; }
+
+    /* --- NUEVOS ESTILOS para el visor --- */
+    #result-container {
+        margin-top: 20px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+    }
+    #pdf-viewer {
+        width: 100%;
+        height: 700px; /* Alto considerable para ver el PDF */
+        border: none;
+    }
+    #error-message {
+        display: none; 
+        text-align: center; 
+        margin-top: 15px; 
+        color: #dc3545; /* Rojo para errores */
+        font-weight: bold;
+    }
+    #loading {
+        display: none; 
+        text-align: center; 
+        margin-top: 15px; 
+        color: #007bff; 
+        font-weight: bold;
+    }
+</style>
+{% endblock %}
+
+
+{% block content %}
+<div class="container-destacador">
+    <h2>Destacador de Palabras Clave</h2>
+    <p>
+        Sube un documento PDF. El sistema analizará el texto e identificará 
+        los términos legales de nuestra base de datos (ej. "cláusula", 
+        "arrendador", etc.) y te mostrará una copia del PDF con esos 
+        términos resaltados en amarillo.
+    </p>
+    
+    <form id="destacador-form" action="{{ url_for('api_destacar_pdf') }}" method="POST" enctype="multipart/form-data">
+        
+        <label for="pdf_file">Selecciona un archivo PDF:</label>
+        <input type="file" id="pdf_file" name="pdf_file" accept=".pdf" required>
+        
+        <button type="submit" id="submit-button">Destacar y Ver</button>
+    </form>
+
+    <div id="loading">
+        Procesando PDF... (Esto puede tardar unos segundos)
+    </div>
+
+    <div id="error-message"></div>
+
+    <div id="result-container" style="display: none;">
+        <h3>Resultado:</h3>
+        <iframe id="pdf-viewer" src=""></iframe>
+    </div>
+</div>
+{% endblock %}
+
+{% block body_scripts %}
+<script>
+// Usaremos lógica de JavaScript para manejar el envío
+const form = document.getElementById('destacador-form');
+const loadingDiv = document.getElementById('loading');
+const submitButton = document.getElementById('submit-button');
+const pdfViewer = document.getElementById('pdf-viewer');
+const resultContainer = document.getElementById('result-container');
+const errorDiv = document.getElementById('error-message');
+
+form.addEventListener('submit', async (event) => {
+    // 1. Prevenimos el envío tradicional del formulario
+    event.preventDefault(); 
+
+    // Ocultar resultados/errores anteriores y mostrar "cargando"
+    loadingDiv.style.display = 'block';
+    resultContainer.style.display = 'none';
+    errorDiv.style.display = 'none';
+    submitButton.disabled = true;
+    submitButton.textContent = 'Procesando...';
+
+    // 2. Creamos el FormData directamente desde el formulario
+    const formData = new FormData(form);
+
+    try {
+        // 3. Enviamos el formulario usando 'fetch'
+        const response = await fetch(form.action, {
+            method: 'POST',
+            body: formData,
+        });
+
+        // 4. Manejamos la respuesta
+        if (response.ok) {
+            // Si la respuesta es exitosa (ej. 200)
+            
+            // Tomamos la respuesta como un 'Blob' (un archivo binario)
+            const pdfBlob = await response.blob(); 
+            
+            // Creamos una URL local en el navegador para ese archivo
+            const pdfUrl = URL.createObjectURL(pdfBlob); 
+            
+            // Asignamos esa URL al <iframe>
+            pdfViewer.src = pdfUrl; 
+            
+            // Mostramos el contenedor del <iframe>
+            resultContainer.style.display = 'block'; 
+
+        } else {
+            // Si el servidor devolvió un error (ej. 400, 500)
+            const errorText = await response.text();
+            errorDiv.textContent = `Error: ${errorText}`;
+            errorDiv.style.display = 'block';
+        }
+
+    } catch (error) {
+        // Si hubo un error de red (ej. no hay conexión)
+        errorDiv.textContent = `Error de red: ${error.message}`;
+        errorDiv.style.display = 'block';
+    
+    } finally {
+        // 5. Ocultamos "cargando" y reactivamos el botón
+        loadingDiv.style.display = 'none';
+        submitButton.disabled = false;
+        submitButton.textContent = 'Destacar y Ver';
+    }
+});
+</script>
+{% endblock %}

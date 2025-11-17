@@ -16,6 +16,8 @@ from nltk.tokenize import word_tokenize
 from sklearn.feature_extraction.text import TfidfVectorizer
 from PyPDF2 import PdfReader
 import json
+import unicodedata
+from rapidfuzz import fuzz
 
 
 #--- Inicialización ---
@@ -36,6 +38,32 @@ except Exception as e:
 PDF_CACHE = LRUCache(maxsize=20) 
 
 #--- Funciones de Lógica ---
+#Cargar terminos legales
+def cargar_terminos_desde_archivo(filename="terminos_legales.txt"):
+    """
+    Carga los términos legales desde un archivo .txt.
+    Ignora líneas vacías y quita espacios en blanco.
+    """
+    terminos = []
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            for linea in f:
+                termino_limpio = linea.strip() 
+                if termino_limpio:
+                    terminos.append(termino_limpio)
+        print(f"✅ Se cargaron {len(terminos)} términos legales desde {filename}")
+        
+    except FileNotFoundError:
+        print(f"⚠️ Error: No se encontró el archivo {filename}.")
+        print("Usando una lista de respaldo por defecto.")
+        terminos = ["contrato", "cláusula", "error"] # Lista de emergencia
+        
+    except Exception as e:
+        print(f"Error inesperado leyendo el archivo {filename}: {e}")
+        terminos = []
+        
+    return terminos
+LISTA_TERMINOS_LEGALES = cargar_terminos_desde_archivo("terminos_legales.txt")
 
 #Extrae y divide el pdf en fragmentos
 def extraer_y_dividir_por_pagina(stream_de_bytes):
@@ -57,6 +85,14 @@ def extraer_y_dividir_por_pagina(stream_de_bytes):
                     })
                     
     return datos_fragmentos
+
+#Extrae el pdf completo
+def extraer_texto_completo(stream_de_bytes):
+    texto_completo = ""
+    with fitz.open(stream=stream_de_bytes, filetype="pdf") as doc:
+        for pagina in doc:
+            texto_completo += pagina.get_text() + "\n"
+    return texto_completo
 
 #Crea indice FAISS
 def crear_indice_faiss(datos_fragmentos, modelo):
@@ -111,8 +147,6 @@ def preprocesar_texto(texto):
     return " ".join(tokens_limpios)
 
 def extraer_texto_y_paginas(archivo_pdf):
-    # Esta función es para el clasificador TF-IDF.
-    # Usa PyPDF2 y devuelve solo el texto completo.
     try:
         pdf_stream = io.BytesIO(archivo_pdf.read())
         reader = PdfReader(pdf_stream)
@@ -121,11 +155,27 @@ def extraer_texto_y_paginas(archivo_pdf):
             texto_pagina = page.extract_text()
             if texto_pagina:
                 texto_completo += texto_pagina + "\n\n"
-        # Devolvemos una tupla para ser compatible con la llamada en api_clasificar
+
         return texto_completo, None 
     except Exception as e:
         print(f"Error leyendo PDF con PyPDF2: {e}")
         return None, None
+
+def normalizar_texto(texto):
+    if not texto:
+        return ""
+    texto = texto.lower()
+    texto = unicodedata.normalize("NFD", texto)
+    texto = "".join(c for c in texto if unicodedata.category(c) != "Mn")
+    texto = texto.replace("\n", " ")
+    texto = texto.replace("\t", " ")
+    return " ".join(texto.split())
+
+def segmentar_texto(texto):
+    partes = re.split(r"\n\s*\n", texto)
+    return [p.strip() for p in partes if len(p.strip()) > 100]
+
+
 
 #--- Rutas de la Aplicación Web ---
 
@@ -138,7 +188,7 @@ def home():
                            pdf_cargado=pdf_cargado, 
                            num_fragmentos=num_fragmentos)
 
-#Búsqueda Semántica
+#-- Rutas de la Búsqueda Contextual ---
 @app.route('/inspector', methods=['POST'])
 def search():
     if modelo is None:
@@ -147,7 +197,6 @@ def search():
     query = request.form.get('query', '')
     file = request.files.get('pdf_file')
 
-    #CASO 1: Se sube un NUEVO PDF
     if file and file.filename != '' and file.filename.endswith('.pdf'):
         try:
             print("Procesando nuevo PDF por página...")
@@ -177,7 +226,6 @@ def search():
         except Exception as e:
             return render_template('inspector.html', error=f"Ocurrió un error: {e}")
 
-    #CASO 2: El usuario ya subió un PDF y solo está consultando
     elif query != '' and 'pdf_id' in session:
         pdf_id = session['pdf_id']
         cached_data = PDF_CACHE.get(pdf_id)
@@ -198,7 +246,6 @@ def search():
             session.pop('num_fragmentos', None)
             return render_template('inspector.html', error="Tu sesión de PDF expiró. Por favor, sube el archivo de nuevo.")
 
-    #CASO 3: Error
     else:
         return render_template('inspector.html', error="Debes subir un PDF y escribir una consulta.")
 
@@ -234,67 +281,160 @@ def clasificador_page():
 
 @app.route("/api/clasificar", methods=["POST"])
 def api_clasificar():
-    """
-    API para "Clasificador" usando SÓLO TF-IDF.
-    Es mucho más rápido y preciso para palabras clave.
-    """
+
     try:
         archivos_subidos = request.files.getlist('file')
-        pregunta = request.form['query']
-        
+        query_raw = request.form.get('query', '').strip()
+
         if not archivos_subidos or archivos_subidos[0].filename == '':
-            return jsonify({'error': 'No se seleccionaron archivos.'})
-        
-        #UMBRAL DE RELEVANCIA LÉXICA
-        # Con TF-IDF, un puntaje bajo (ej. 0.05) ya puede ser relevante
-        UMBRAL_LEXICAL = 0.05 
-        
-        #Preparar la Pregunta
-        pregunta_limpia = preprocesar_texto(pregunta)
-        
-        lista_textos_completos = []
-        lista_nombres_archivos = []
+            return jsonify({'error': 'No se seleccionaron archivos.'}), 400
 
-        #Extraer el texto de TODOS los archivos
+        if query_raw == '':
+            return jsonify({'error': 'Debes escribir una palabra o frase a buscar.'}), 400
+
+        query = normalizar_texto(query_raw)
+
+        resultados = []
+
         for archivo in archivos_subidos:
+
             if archivo and archivo.filename.endswith('.pdf'):
-                texto_completo, _ = extraer_texto_y_paginas(archivo)
-                if texto_completo:
-                    lista_textos_completos.append(texto_completo)
-                    lista_nombres_archivos.append(archivo.filename)
 
-        if not lista_textos_completos:
-            return jsonify([])
+                archivo.seek(0)
+                pdf_stream = io.BytesIO(archivo.read())
+                reader = PdfReader(pdf_stream)
 
-        #Preprocesar los textos
-        corpus_limpio = [preprocesar_texto(texto) for texto in lista_textos_completos]
+                texto_completo = ""
 
-        #Aplicar TF-IDF
-        vectorizer_tfidf = TfidfVectorizer()
-        tfidf_doc_matriz = vectorizer_tfidf.fit_transform(corpus_limpio)
-        tfidf_pregunta = vectorizer_tfidf.transform([pregunta_limpia])
-        
-        #Similitud de la pregunta contra TODOS los documentos a la vez
-        similitudes_tfidf = cosine_similarity(tfidf_pregunta, tfidf_doc_matriz).flatten()
+                for page in reader.pages:
+                    txt = page.extract_text()
+                    if txt:
+                        texto_completo += " " + normalizar_texto(txt)
 
-        #Filtrar y Recopilar Resultados
-        lista_de_scores = []
-        for i, score in enumerate(similitudes_tfidf):
-            if score > UMBRAL_LEXICAL:
-                lista_de_scores.append({
-                    "documento": lista_nombres_archivos[i],
-                    "similitud": float(score) 
+                coincidencia_exacta = query in texto_completo
+                palabras = query.split()
+
+                if len(palabras) == 1:
+                    score_fuzzy = fuzz.partial_ratio(query, texto_completo)
+                else:
+                    score_fuzzy = fuzz.token_set_ratio(query, texto_completo)
+
+                fuzzy_match = score_fuzzy >= 80
+
+                resultados.append({
+                    "documento": archivo.filename,
+                    "coincidencia_exacta": coincidencia_exacta,
+                    "fuzzy": fuzzy_match,
+                    "score": float(score_fuzzy)
                 })
 
-        #lista resultados relevantes
-        resultados_ordenados = sorted(lista_de_scores, key=lambda x: x["similitud"], reverse=True)
-        
-        return jsonify(resultados_ordenados)
-            
+        resultados = sorted(
+            resultados,
+            key=lambda x: (x["coincidencia_exacta"], x["fuzzy"], x["score"]),
+            reverse=True
+        )
+
+        return jsonify(resultados)
+
     except Exception as e:
-        print(f"Error en /api/clasificar: {e}")
-        return jsonify({'error': f'Ocurrió un error en el servidor: {str(e)}'}), 500
+        print("Error en búsqueda fuzzy:", e)
+        return jsonify({'error': f'Error del servidor: {str(e)}'}), 500
+
+
+#--- Rutal del Destacador ---
+@app.route("/destacador")
+def destacador_page():
+    return render_template("destacador.html")
+
+@app.route("/api/destacar_pdf", methods=["POST"])
+def api_destacar_pdf():
+    """
+    API Corregida: Recibe 1 PDF y lo devuelve destacando en amarillo
+    los términos de LISTA_TERMINOS_LEGALES, ignorando mayúsculas
+    y manejando espacios múltiples o saltos de línea.
     
+    Esta versión incluye una corrección para evitar la superposición
+    de destacados (que los hacía ver más oscuros).
+    """
+    
+    if not LISTA_TERMINOS_LEGALES:
+        return "Error: No se cargó la lista de términos legales en el servidor.", 500
+    
+    try:
+        archivo = request.files.get('pdf_file')
+        
+        if not archivo or archivo.filename == '' or not archivo.filename.endswith('.pdf'):
+            return "No se seleccionó un archivo PDF válido.", 400
+
+        pdf_bytes = archivo.read()
+
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        
+        print(f"Buscando {len(LISTA_TERMINOS_LEGALES)} términos legales con regex...")
+
+        AMARILLO_DESTACADOR = (0.95, 0.95, 0.2) 
+
+
+        for pagina in doc:
+            
+            areas_ya_destacadas = [] 
+
+            anotaciones_viejas = pagina.annots() 
+            for annot in anotaciones_viejas:
+                pagina.delete_annot(annot)
+            
+
+            texto_pagina = pagina.get_text("text")
+
+            for termino in LISTA_TERMINOS_LEGALES:
+                
+                termino_escaped = re.escape(termino)
+                
+                patron_regex = termino_escaped.replace(r'\ ', r'\s+')
+                
+                matches = re.finditer(patron_regex, texto_pagina, flags=re.IGNORECASE)
+                
+                for match in matches:
+
+                    texto_encontrado = match.group(0)
+                    
+                    areas_encontradas = pagina.search_for(texto_encontrado, quads=True)
+                    
+                    for quad in areas_encontradas:
+                        
+                        rect_actual = quad.rect
+
+                        hay_superposicion = False
+                        for rect_existente in areas_ya_destacadas:
+
+                            if rect_actual.intersects(rect_existente):
+                                hay_superposicion = True
+                                break
+                        
+                        if not hay_superposicion:
+                            annot = pagina.add_highlight_annot(quad)
+                            
+                            annot.set_colors(stroke=AMARILLO_DESTACADOR)
+                            annot.update()
+                            
+                            areas_ya_destacadas.append(rect_actual) 
+                            
+        output_bytes = doc.tobytes()
+        doc.close()
+
+        response = make_response(output_bytes)
+        response.headers['Content-Type'] = 'application/pdf'
+        
+        nombre_archivo = f"destacado_{archivo.filename}"
+        response.headers['Content-Disposition'] = f'attachment; filename="{nombre_archivo}"'
+        
+        return response
+
+    except Exception as e:
+        print(f"Error general en /api/destacar_pdf: {e}")
+        return f"Ocurrió un error en el servidor: {str(e)}", 500
+
+
 #--- Ejecutar la App ---
 if __name__ == '__main__':
     app.run(debug=True)

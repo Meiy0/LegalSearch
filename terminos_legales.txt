@@ -1,0 +1,81 @@
+abogado
+accionista
+acuerdo
+adquisición
+albacea
+anexo
+apelación
+arbitraje
+arrendador
+arrendatario
+aval
+caso fortuito
+certificar
+cláusula
+confidencialidad
+consentimiento
+contrato
+corte
+cuota
+culpa
+daños y perjuicios
+decreto
+demanda
+depósito en garantía
+derecho
+distribuidor
+dolo
+embargo
+estatutos
+exclusividad
+factura
+fiador
+firma
+fuerza mayor
+fusión
+garantía
+heredar
+hipoteca
+honorarios
+incumplimiento
+indemnización
+inmueble
+intereses
+juez
+junta directiva
+jurisdicción
+legado
+ley
+licencia
+litigio
+marca registrada
+mediación
+mora
+multa
+negligencia
+notario
+notificación
+notificar
+obligación
+pago
+partes
+patente
+penalización
+procurador
+propiedad
+propiedad intelectual
+reglamento
+rescisión
+resolución
+responsabilidad
+sentencia
+servidumbre
+sociedad
+subarrendar
+terminación
+testamento
+testificar
+traspaso
+tribunal
+usufructo
+vigencia
