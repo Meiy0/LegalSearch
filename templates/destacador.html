@@ -67,12 +67,6 @@
 {% block content %}
 <div class="container-destacador">
     <h2>Destacador de Palabras Clave</h2>
-    <p>
-        Sube un documento PDF. El sistema analizará el texto e identificará 
-        los términos legales de nuestra base de datos (ej. "cláusula", 
-        "arrendador", etc.) y te mostrará una copia del PDF con esos 
-        términos resaltados en amarillo.
-    </p>
     
     <form id="destacador-form" action="{{ url_for('api_destacar_pdf') }}" method="POST" enctype="multipart/form-data">
         
